@@ -1,0 +1,116 @@
+/***********ffmpeg学习笔记*******************/
+
+AVFormatContext主要存储视音频封装格式中包含的信息；
+AVInputFormat存储输入视音频使用的封装格式。
+每种视音频封装格式都对应一个AVInputFormat 结构。
+每个AVStream存储一个视频/音频流的相关数据；
+每个AVStream对应一个AVCodecContext，存储该视频/音频流使用解码方式的相关数据；
+每个AVCodecContext中对应一个AVCodec，包含该视频/音频对应的解码器。每种解码器都对应一个AVCodec结构。
+
+视频的话，每个结构一般是存一帧；音频可能有好几帧
+解码前数据：AVPacket
+解码后数据：AVFrame
+
+/***************************/
+int av_image_get_buffer_size(enum AVPixelFormat pix_fmt, int width, int height, int align);
+函数的作用是通过指定像素格式、图像宽、图像高来计算所需的内存大小
+重点说明一个参数align:此参数是设定内存对齐的对齐数，也就是按多大的字节进行内存对齐。
+比如设置为1，表示按1字节对齐，那么得到的结果就是与实际的内存大小一样。
+再比如设置为4，表示按4字节对齐。也就是内存的起始地址必须是4的整倍数。
+
+/******************************/
+int av_image_fill_arrays(uint8_t *dst_data[4], int dst_linesize[4], const uint8_t *src,  
+                            enum AVPixelFormat pix_fmt, int width, int height, int align);
+                            
+av_image_fill_arrays()函数自身不具备内存申请的功能，此函数类似于格式化已经申请的内存，即通过av_malloc()函数申请的内存空间。
+再者，av_image_fill_arrays()中参数具体说明：
+dst_data[4]：        [out]对申请的内存格式化为三个通道后，分别保存其地址
+dst_linesize[4]:        [out]格式化的内存的步长（即内存对齐后的宽度)
+*src:        [in]av_alloc()函数申请的内存地址。
+pix_fmt:    [in] 申请 src内存时的像素格式
+width:        [in]申请src内存时指定的宽度
+height:        [in]申请scr内存时指定的高度
+align:        [in]申请src内存时指定的对齐字节数。
+通过以上实例可以看到，（a)计算所需内存大小av_image_get_bufferz_size() --> (b) 按计算的内存大小申请所需内存 av_malloc()  --> (c) 对申请的内存进行格式化 av_image_fill_arrays();
+
+/********************************/
+libswscale常用的函数数量很少，一般情况下就3个：
+sws_getContext()：初始化一个SwsContext。
+sws_scale()：处理图像数据。
+sws_freeContext()：释放一个SwsContext。
+
+/*************************/
+SwsContext *sws_getContext(int srcW, int srcH, enum AVPixelFormat srcFormat,
+                           int dstW, int dstH, enum AVPixelFormat dstFormat,
+                           int flags, SwsFilter *srcFilter,
+                           SwsFilter *dstFilter, const double *param)                
+                           
+成功后返回SwsContext 类型的结构体。
+参数1：被转换源的宽
+参数2：被转换源的高
+参数3：被转换源的格式，eg：YUV、RGB……（枚举格式，也可以直接用枚举的代号表示eg：AV_PIX_FMT_YUV420P这些枚举的格式在libavutil/pixfmt.h中列出）
+参数4：转换后指定的宽
+参数5：转换后指定的高
+参数6：转换后指定的格式同参数3的格式
+参数7：转换所使用的算法
+参数8：NULL
+参数9：NULL
+参数10：NULL                           
+
+/**********************/
+真正用来做转换的函数则是： sws_scale() ，其函数定义如下：
+int sws_scale(struct SwsContext *c, const uint8_t *const srcSlice[],
+              const int srcStride[], int srcSliceY, int srcSliceH,
+              uint8_t *const dst[], const int dstStride[]);
+              
+下面对其函数参数进行详细说明：
+1.参数 SwsContext *c， 转换格式的上下文。也就是 sws_getContext 函数返回的结果。
+2.参数 const uint8_t *const srcSlice[], 输入图像的每个颜色通道的数据指针。其实就是解码后的AVFrame中的data[]数组。因为不同像素的存储格式不同，所以srcSlice[]维数
+也有可能不同。
+以YUV420P为例，它是planar格式，它的内存中的排布如下：
+YYYYYYYY UUUU VVVV
+使用FFmpeg解码后存储在AVFrame的data[]数组中时：
+data[0]——-Y分量, Y1, Y2, Y3, Y4, Y5, Y6, Y7, Y8…… 
+data[1]——-U分量, U1, U2, U3, U4…… 
+data[2]——-V分量, V1, V2, V3, V4…… 
+linesize[]数组中保存的是对应通道的数据宽度 ， 
+linesize[0]——-Y分量的宽度 
+linesize[1]——-U分量的宽度 
+linesize[2]——-V分量的宽度
+
+而RGB24，它是packed格式，它在data[]数组中则只有一维，它在存储方式如下：
+data[0]: R1, G1, B1, R2, G2, B2, R3, G3, B3, R4, G4, B4……
+这里要特别注意，linesize[0]的值并不一定等于图片的宽度，有时候为了对齐各解码器的CPU，实际尺寸会大于图片的宽度，这点在我们编程时（比如OpengGL硬件转换/渲染）要特别注意，否则解码出来的图像会异常。
+
+3.参数const int srcStride[]，输入图像的每个颜色通道的跨度。.也就是每个通道的行字节数，对应的是解码后的AVFrame中的linesize[]数组。根据它可以确立下一行的起始位置，不过stride和width不一定相同，这是因为：
+a.由于数据帧存储的对齐，有可能会向每行后面增加一些填充字节这样 stride = width + N；
+b.packet色彩空间下，每个像素几个通道数据混合在一起，例如RGB24，每个像素3字节连续存放，因此下一行的位置需要跳过3*width字节。
+
+4.参数int srcSliceY, int srcSliceH,定义在输入图像上处理区域，srcSliceY是起始位置，srcSliceH是处理多少行。如果srcSliceY=0，srcSliceH=height，表示一次性处理完整个图像。
+这种设置是为了多线程并行，例如可以创建两个线程，第一个线程处理 [0, h/2-1]行，第二个线程处理 [h/2, h-1]行。并行处理加快速度。
+5.参数uint8_t *const dst[], const int dstStride[]定义输出图像信息（输出的每个颜色通道数据指针，每个颜色通道行字节数）              
+
+
+/********************************************/
+int av_read_frame(AVFormatContext *s, AVPacket *pkt);
+av_read_frame()使用方法在注释中写得很详细，用中文简单描述一下它的两个参数：
+s：输入的AVFormatContext
+pkt：输出的AVPacket
+av_read_frame()的作用是读取码流中的音频若干帧或者视频一帧。
+例如，解码视频的时候，每解码一个视频帧，需要先调用 av_read_frame()获得一帧视频的压缩数据，然后才能对该数据进行解码（例如H.264中一帧压缩数据通常对应一个NAL）。
+再次调用本函数之前，必须使用av_free_packet释放pkt所占用的资源。
+
+
+/********************************/
+int avcodec_decode_video2(AVCodecContext *avctx, AVFrame *picture,
+                         int *got_picture_ptr,
+                         const AVPacket *avpkt);
+                         
+待解码的数据保存在avpkt->data中，大小为avpkt->size；解码完成后，picture用于保存输出图像数据。
+该方法的各个参数：
+AVCodecContext *avctx：编解码上下文环境，定义了编解码操作的一些细节；
+AVFrame *picture：输出参数；传递到该方法的对象本身必须在外部由av_frame_alloc()分配空间，而实际解码过后的数据储存区将由AVCodecContext.get_buffer2()分配；
+        AVCodecContext.refcounted_frames表示该frame的引用计数，当这个值为1时，表示有另外一帧将该帧用作参考帧，而且参考帧返回给调用者；
+        当参考完成时，调用者需要调用av_frame_unref()方法解除对该帧的参考；av_frame_is_writable()可以通过返回值是否为1来验证该帧是否可写。
+int *got_picture_ptr：该值为0表明没有图像可以解码，否则表明有图像可以解码；
+const AVPacket *avpkt：输入参数，包含待解码数据。
